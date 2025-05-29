@@ -446,6 +446,170 @@ pub fn sys_utimensat(
     Ok(0)
 }
 
+#[cfg(kani)]
+mod kani_sys_utimensat_test {
+    use super::*;
+
+    // Mock wall time
+    pub const MOCK_WALL_TIME_DURATION: Duration = Duration::new(1234567890, 0);
+    pub fn mock_wall_time() -> Duration {
+        MOCK_WALL_TIME_DURATION
+    }
+
+    #[derive(Copy, Clone)]
+    struct MockMetadata {
+        atime: Duration,
+        mtime: Duration,
+    }
+
+    static mut KANI_GLOBAL_MOCK_METADATA: MockMetadata = MockMetadata {
+        atime: Duration::new(0, 0),
+        mtime: Duration::new(0, 0),
+    };
+
+
+    fn mock_update_times(
+        _dirfd: i32,
+        _path: &str,
+        atime_opt: Option<Duration>,
+        mtime_opt: Option<Duration>,
+        _flags: u32,
+    ) -> LinuxResult<()> {
+        unsafe {
+            if let Some(new_atime) = atime_opt {
+                KANI_GLOBAL_MOCK_METADATA.atime = new_atime;
+            }
+            if let Some(new_mtime) = mtime_opt {
+                KANI_GLOBAL_MOCK_METADATA.mtime = new_mtime;
+            }
+        }
+        Ok(())
+    }
+
+    // ref: https://github.com/Mivik/starry-next/blob/a6d51ff5b68660aaac9dd57a765acf8a2fb663fd/api/src/imp/fs/ctl.rs
+    fn mock_sys_utimensat_fixed(
+        dirfd: i32,
+        path: &str,
+        times: Option<[timespec; 2]>,
+        flags: u32,
+    ) -> LinuxResult<isize> {
+        fn utime_to_duration(time_spec: timespec) -> Option<Duration> {
+            match time_spec.tv_nsec {
+                val if val == UTIME_OMIT as _ => None,
+                val if val == UTIME_NOW as _ => Some(mock_wall_time()),
+                _ => Some(time_spec.to_time_value()),
+            }
+        }
+        let (atime_opt, mtime_opt) = match times {
+            Some([spec_atime, spec_mtime]) => (utime_to_duration(spec_atime), utime_to_duration(spec_mtime)),
+            None => (Some(mock_wall_time()), Some(mock_wall_time())),
+        };
+
+        if atime_opt.is_none() && mtime_opt.is_none() {
+            return Ok(0);
+        }
+        mock_update_times(dirfd, path, atime_opt, mtime_opt, flags)?;
+        Ok(0)
+    }
+
+    // ref: https://github.com/Mivik/starry-next/blob/92954396332516a5ee3b7801c161f929ba7a2f7f/api/src/imp/fs/ctl.rs
+    fn mock_sys_utimensat_buggy(
+        dirfd: i32,
+        path: &str,
+        times: Option<[timespec; 2]>,
+        flags: u32,
+    ) -> LinuxResult<isize> {
+        let atime = times.map(|it| it[0].to_time_value());
+        let mtime = times.map(|it| it[1].to_time_value());
+        mock_update_times(dirfd, path, atime, mtime, flags)?;
+        Ok(0)
+    }
+
+    #[kani::proof]
+    fn check_sys_utimensat() {
+        let dirfd = 0;
+        let path = "test_path";
+
+        let ts_atime_spec = timespec {
+            tv_sec: kani::any(),
+            tv_nsec: kani::any(),
+        };
+        let ts_mtime_spec = timespec {
+            tv_sec: kani::any(),
+            tv_nsec: kani::any(),
+        };
+
+        if ts_atime_spec.tv_nsec != UTIME_NOW as _ && ts_atime_spec.tv_nsec != UTIME_OMIT as _ {
+            kani::assume(ts_atime_spec.tv_sec >= 0);
+            kani::assume(ts_atime_spec.tv_nsec >= 0 && ts_atime_spec.tv_nsec < 1_000_000_000);
+        }
+        if ts_mtime_spec.tv_nsec != UTIME_NOW as _ && ts_mtime_spec.tv_nsec != UTIME_OMIT as _ {
+            kani::assume(ts_mtime_spec.tv_sec >= 0);
+            kani::assume(ts_mtime_spec.tv_nsec >= 0 && ts_mtime_spec.tv_nsec < 1_000_000_000);
+        }
+        
+        // 使用 kani::any() 来模拟 timespec 的所有可能的输入
+        let times_is_some: bool = kani::any();
+        let times_input: Option<[timespec; 2]> = if times_is_some {
+            Some([ts_atime_spec, ts_mtime_spec])
+        } else {
+            None
+        };
+
+        let flags = 0;
+
+        // 初始化全局变量 KANI_GLOBAL_MOCK_METADATA
+        let initial_atime_val: Duration = kani::any();
+        let initial_mtime_val: Duration = kani::any();
+        let initial_metadata_state = MockMetadata {
+            atime: initial_atime_val,
+            mtime: initial_mtime_val,
+        };
+
+        unsafe { // 设置 static mut 需要 unsafe
+            KANI_GLOBAL_MOCK_METADATA = initial_metadata_state;
+        }
+        
+        // 记录调用 mock_sys_utimensat 前的 metadata
+        let original_meta_data = initial_metadata_state;
+        let result = mock_sys_utimensat_buggy(dirfd, path, times_input, flags);
+        kani::assert(result.is_ok(), "mock_sys_utimensat_buggy should always return Ok");
+
+        // 读取调用后的 metadata
+        let final_meta_data: MockMetadata;
+        unsafe {
+            final_meta_data = KANI_GLOBAL_MOCK_METADATA;
+        }
+
+        // 计算 metadata 的预期值
+        let mut expected_final_atime = original_meta_data.atime;
+        let mut expected_final_mtime = original_meta_data.mtime;
+
+        if let Some([spec_atime, spec_mtime]) = times_input {
+            if !(spec_atime.tv_nsec == UTIME_OMIT as _ && spec_mtime.tv_nsec == UTIME_OMIT as _) {
+                match spec_atime.tv_nsec {
+                    val if val == UTIME_OMIT as _ => { /* atime 不变, expected_final_atime 保持 original */ }
+                    val if val == UTIME_NOW as _ => expected_final_atime = mock_wall_time(),
+                    _ => expected_final_atime = spec_atime.to_time_value(),
+                }
+                match spec_mtime.tv_nsec {
+                    val if val == UTIME_OMIT as _ => { /* mtime 不变, expected_final_mtime 保持 original */ }
+                    val if val == UTIME_NOW as _ => expected_final_mtime = mock_wall_time(),
+                    _ => expected_final_mtime = spec_mtime.to_time_value(),
+                }
+            }
+            // 如果两者都 OMIT，expected_final_atime/mtime 已经等于 original_meta_data 的值
+        } else {
+            // times 参数为 None
+            expected_final_atime = mock_wall_time();
+            expected_final_mtime = mock_wall_time();
+        }
+
+        kani::assert(final_meta_data.atime == expected_final_atime, "ATIME check failed.\n");
+        kani::assert(final_meta_data.mtime == expected_final_mtime, "MTIME check failed.\n");
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
 pub fn sys_rename(
     old_path: UserConstPtr<c_char>,
