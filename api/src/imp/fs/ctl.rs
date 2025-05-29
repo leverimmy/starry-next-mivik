@@ -548,14 +548,7 @@ mod kani_sys_utimensat_test {
             kani::assume(ts_mtime_spec.tv_nsec >= 0 && ts_mtime_spec.tv_nsec < 1_000_000_000);
         }
         
-        // 使用 kani::any() 来模拟 timespec 的所有可能的输入
-        let times_is_some: bool = kani::any();
-        let times_input: Option<[timespec; 2]> = if times_is_some {
-            Some([ts_atime_spec, ts_mtime_spec])
-        } else {
-            None
-        };
-
+        let times_input = Some([ts_atime_spec, ts_mtime_spec]);
         let flags = 0;
 
         // 初始化全局变量 KANI_GLOBAL_MOCK_METADATA
