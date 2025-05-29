@@ -605,8 +605,8 @@ mod kani_sys_utimensat_test {
             expected_final_mtime = mock_wall_time();
         }
 
-        kani::assert(final_meta_data.atime == expected_final_atime, "ATIME check failed.\n");
-        kani::assert(final_meta_data.mtime == expected_final_mtime, "MTIME check failed.\n");
+        kani::assert(final_meta_data.atime == expected_final_atime, "ATIME check failed.");
+        kani::assert(final_meta_data.mtime == expected_final_mtime, "MTIME check failed.");
     }
 }
 
