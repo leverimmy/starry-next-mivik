@@ -592,10 +592,6 @@ mod kani_sys_utimensat_test {
                 }
             }
             // 如果两者都 OMIT，expected_final_atime/mtime 已经等于 original_meta_data 的值
-        } else {
-            // times 参数为 None
-            expected_final_atime = mock_wall_time();
-            expected_final_mtime = mock_wall_time();
         }
 
         kani::assert(final_meta_data.atime == expected_final_atime, "ATIME check failed.");
